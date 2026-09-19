@@ -117,18 +117,25 @@ class AlignmentManager {
         }
     }
 
+    private var lastCalibratedState = false
+
     /**
      * Get the current calibration rotation estimate.
      */
     fun getCurrentRotation(): RotationEstimate {
         return try {
             val arr = getCurrentRotationNative()
+            val isCalibrated = arr[3] > 0.5f
+            if (isCalibrated && !lastCalibratedState) {
+                lastCalibratedState = true
+                Log.i(TAG, "Calibration state updated: Full 3D locked! Pitch=${arr[0]} rad, Roll=${arr[1]} rad, Yaw=${arr[2]} rad")
+            }
             // arr[4]: [pitch, roll, yaw, yaw_calibrated_as_float]
             RotationEstimate(
                 pitchRad      = arr[0],
                 rollRad       = arr[1],
                 yawRad        = arr[2],
-                yawCalibrated = arr[3] > 0.5f
+                yawCalibrated = isCalibrated
             )
         } catch (e: Exception) {
             Log.e(TAG, "JNI getCurrentRotation threw: ${e.message}", e)
@@ -147,8 +154,9 @@ class AlignmentManager {
      */
     fun reset() {
         try {
+            lastCalibratedState = false
             resetCalibration()
-            Log.d(TAG, "Native calibration state reset successfully")
+            Log.i(TAG, "Native calibration state reset successfully")
         } catch (e: UnsatisfiedLinkError) {
             Log.w(TAG, "Native resetCalibration not linked: ${e.message}")
         } catch (e: Exception) {

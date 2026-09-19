@@ -33,6 +33,27 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// ─── Diagnostic Logging Macros ──────────────────────────────────────────────
+#if defined(__ANDROID__)
+  #include <android/log.h>
+  #define CALIB_LOG_TAG "CalibCore"
+  #define CALIB_LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, CALIB_LOG_TAG, __VA_ARGS__)
+  #define CALIB_LOGI(...) __android_log_print(ANDROID_LOG_INFO,  CALIB_LOG_TAG, __VA_ARGS__)
+  #define CALIB_LOGW(...) __android_log_print(ANDROID_LOG_WARN,  CALIB_LOG_TAG, __VA_ARGS__)
+  #define CALIB_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, CALIB_LOG_TAG, __VA_ARGS__)
+#elif defined(CALIB_DEBUG_ENABLE)
+  #include <cstdio>
+  #define CALIB_LOGD(...) do { fprintf(stdout, "[CalibCore DEBUG] " __VA_ARGS__); fprintf(stdout, "\n"); } while(0)
+  #define CALIB_LOGI(...) do { fprintf(stdout, "[CalibCore INFO]  " __VA_ARGS__); fprintf(stdout, "\n"); } while(0)
+  #define CALIB_LOGW(...) do { fprintf(stderr, "[CalibCore WARN]  " __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+  #define CALIB_LOGE(...) do { fprintf(stderr, "[CalibCore ERROR] " __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#else
+  #define CALIB_LOGD(...) ((void)0)
+  #define CALIB_LOGI(...) ((void)0)
+  #define CALIB_LOGW(...) ((void)0)
+  #define CALIB_LOGE(...) ((void)0)
+#endif
+
 // ─── Module singletons & thread safety ──────────────────────────────────────
 static DynamicAlignmentEKF g_ekf;
 static PooledYawOptimizer  g_yaw_opt;
@@ -109,6 +130,10 @@ void DynamicAlignmentEKF::initialize_from_gravity(float ax, float ay, float az) 
     gate_elapsed_ms_ = 0;
     gate_sustained_ = false;
     initialized_ = true;
+
+    CALIB_LOGI("Static gravity alignment locked: pitch=%.3f deg (%.4f rad), roll=%.3f deg (%.4f rad)",
+               x_[0] * 180.0f / static_cast<float>(M_PI), x_[0],
+               x_[1] * 180.0f / static_cast<float>(M_PI), x_[1]);
 }
 
 float DynamicAlignmentEKF::pitch() const {
@@ -283,6 +308,7 @@ void DynamicAlignmentEKF::update(const ImuSample& sample) {
         std::isnan(sample.gyro[0])  || std::isnan(sample.gyro[1])  || std::isnan(sample.gyro[2]) ||
         std::isinf(sample.accel[0]) || std::isinf(sample.accel[1]) || std::isinf(sample.accel[2]) ||
         std::isinf(sample.gyro[0])  || std::isinf(sample.gyro[1])  || std::isinf(sample.gyro[2])) {
+        CALIB_LOGW("update: Corrupted IMU sample rejected (contains NaN or Inf)");
         return;
     }
 
@@ -394,6 +420,7 @@ float PooledYawOptimizer::solve() const {
 
     // Raw closed-form solution (one of two minima)
     float psi = 0.5f * atan2f(static_cast<float>(cross), static_cast<float>(diff));
+    const float psi_raw = psi;
 
     // Quadrant disambiguation (G5 fix — §4.1.6):
     // Check if the solved ψ aligns with the dominant direction of accumulated
@@ -403,6 +430,11 @@ float PooledYawOptimizer::solve() const {
                            + sum_ay_ * static_cast<double>(sinf(psi));
     if (alignment < 0.0) {
         psi = wrap_pi(psi + static_cast<float>(M_PI));
+        CALIB_LOGI("Yaw quadrant flip applied: raw=%.4f rad -> flipped=%.4f rad (alignment=%.3f)",
+                   psi_raw, psi, alignment);
+    } else {
+        CALIB_LOGD("Yaw quadrant alignment positive (%.3f): keeping raw psi=%.4f rad",
+                   alignment, psi);
     }
 
     return wrap_pi(psi);
@@ -483,6 +515,7 @@ void calibration_init() {
     s_win_count = 0;
     s_in_window = false;
     release_lock();
+    CALIB_LOGI("calibration_init: Engine state reset to identity.");
 }
 
 void calibration_update(const ImuSample& sample) {
@@ -526,10 +559,18 @@ void calibration_update(const ImuSample& sample) {
         unleveled_leveled[1] = R10 * ax + R11 * ay + R12 * az;
         unleveled_leveled[2] = R20 * ax + R21 * ay + R22 * az + G_MS2;
 
-        const bool is_braking_accel = (fabsf(unleveled_leveled[0]) > YAW_WINDOW_ACCEL_THRESHOLD) &&
+        // Use rotation-invariant horizontal acceleration magnitude (Issue #1 fix)
+        // so braking windows qualify reliably regardless of phone mounting yaw.
+        const float horiz_accel_mag = sqrtf(unleveled_leveled[0] * unleveled_leveled[0] +
+                                            unleveled_leveled[1] * unleveled_leveled[1]);
+        const bool is_braking_accel = (horiz_accel_mag >= YAW_WINDOW_ACCEL_THRESHOLD) &&
                                       (gyro_mag < GYRO_GATE_RADS);
 
         if (is_braking_accel) {
+            if (!s_in_window) {
+                CALIB_LOGD("Yaw window #%d started (horiz_accel=%.3f m/s²)",
+                           g_yaw_opt.window_count() + 1, horiz_accel_mag);
+            }
             s_in_window = true;
             if (s_win_count < WINDOW_BUFFER_CAPACITY) {
                 s_win_ax[s_win_count] = unleveled_leveled[0];
@@ -541,6 +582,8 @@ void calibration_update(const ImuSample& sample) {
                 // Event ended: commit accumulated window to pooled optimizer
                 if (s_win_count >= 10) {
                     g_yaw_opt.add_window(s_win_ax, s_win_ay, s_win_count);
+                    CALIB_LOGD("Yaw window committed: %d samples. Total: %d samples, %d windows",
+                               s_win_count, g_yaw_opt.total_samples(), g_yaw_opt.window_count());
                 }
                 s_win_count = 0;
                 s_in_window = false;
@@ -549,6 +592,8 @@ void calibration_update(const ImuSample& sample) {
                 if (g_yaw_opt.ready()) {
                     g_state.yaw_rad = g_yaw_opt.solve();
                     g_state.yaw_calibrated = 1;
+                    CALIB_LOGI("Yaw calibration COMPLETE: yaw=%.4f rad (%.2f deg)",
+                               g_state.yaw_rad, g_state.yaw_rad * 180.0f / static_cast<float>(M_PI));
                 }
             }
         }
