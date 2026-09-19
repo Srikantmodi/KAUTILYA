@@ -16,6 +16,7 @@
  *   6. test_edge_nan_accel_rejected (Corrupted sensor data NaN rejection §5.5)
  *   7. test_level_accelerometer_flat_and_tilted (Leveling transform verification)
  *   8. test_pooled_yaw_optimizer (Closed-form yaw solve verification)
+ *   9. test_pooled_yaw_optimizer_quadrant_disambiguation (Yaw quadrant disambiguation §4.1.6 Gap-G5)
  */
 
 #include "calibration.h"
@@ -285,6 +286,75 @@ static void test_pooled_yaw_optimizer() {
 }
 
 
+// ─── Test 9: Pooled yaw optimizer quadrant disambiguation (§4.1.6 Gap-G5) ────
+static void test_pooled_yaw_optimizer_quadrant_disambiguation() {
+    // Test Case 1: Phone mounted facing backward-right: ψ = -150° (-5π/6 rad ≈ -2.61799 rad)
+    // Raw atan2/2 returns ψ_raw = +30° (+π/6 rad ≈ +0.5236 rad) because
+    // atan2(sin(2*(-150°)), cos(2*(-150°))) = atan2(sin(-300°), cos(-300°)) = +60°.
+    // 60° / 2 = +30°.
+    // Without disambiguation, phone would erroneously be reported as facing forward-right (+30°)!
+    // With quadrant disambiguation:
+    // dominant forward motion has sum_ax * cos(+30°) + sum_ay * sin(+30°) < 0,
+    // which triggers the π flip: +30° - 180° = -150° (correct).
+    {
+        PooledYawOptimizer opt;
+        const float true_psi = -5.0f * static_cast<float>(M_PI) / 6.0f; // -150° = -2.61799 rad
+        const int N_PER_WIN = 60;
+        std::vector<float> win_ax(N_PER_WIN);
+        std::vector<float> win_ay(N_PER_WIN);
+
+        for (int i = 0; i < N_PER_WIN; ++i) {
+            float a_fwd = 2.5f + 0.5f * sinf(static_cast<float>(i));
+            win_ax[i] = a_fwd * cosf(true_psi);
+            win_ay[i] = a_fwd * sinf(true_psi);
+        }
+
+        opt.add_window(win_ax.data(), win_ay.data(), N_PER_WIN);
+        opt.add_window(win_ax.data(), win_ay.data(), N_PER_WIN);
+        opt.add_window(win_ax.data(), win_ay.data(), N_PER_WIN);
+
+        ASSERT(opt.ready(), "Optimizer should be ready after 3 windows");
+        float solved_psi = opt.solve();
+
+        ASSERT_NEAR(solved_psi, true_psi, 0.01f,
+                    "Quadrant disambiguation must correctly recover -150 deg (quadrant III)");
+        // Verify it did not return the raw ambiguous solve (+30 deg)
+        const float raw_ambiguous = static_cast<float>(M_PI / 6.0);
+        ASSERT(fabsf(solved_psi - raw_ambiguous) > 1.0f,
+               "Disambiguated solve must differ from raw +30 deg minimum by ~pi");
+    }
+
+    // Test Case 2: Backward-mounted phone facing almost directly backward: ψ = -π + 0.1 rad
+    // Raw atan2/2 returns +0.1 rad (facing almost forward)
+    // Disambiguation must flip by π to recover -π + 0.1 rad
+    {
+        PooledYawOptimizer opt;
+        const float true_psi = -static_cast<float>(M_PI) + 0.1f;
+        const int N_PER_WIN = 60;
+        std::vector<float> win_ax(N_PER_WIN);
+        std::vector<float> win_ay(N_PER_WIN);
+
+        for (int i = 0; i < N_PER_WIN; ++i) {
+            float a_fwd = 3.0f + 0.3f * cosf(static_cast<float>(i));
+            win_ax[i] = a_fwd * cosf(true_psi);
+            win_ay[i] = a_fwd * sinf(true_psi);
+        }
+
+        opt.add_window(win_ax.data(), win_ay.data(), N_PER_WIN);
+        opt.add_window(win_ax.data(), win_ay.data(), N_PER_WIN);
+        opt.add_window(win_ax.data(), win_ay.data(), N_PER_WIN);
+
+        ASSERT(opt.ready(), "Optimizer should be ready after 3 windows");
+        float solved_psi = opt.solve();
+
+        ASSERT_NEAR(solved_psi, true_psi, 0.01f,
+                    "Quadrant disambiguation must recover backward-facing -pi+0.1 rad");
+        ASSERT(fabsf(solved_psi - 0.1f) > 1.0f,
+               "Solved psi must not equal raw forward-facing +0.1 rad");
+    }
+}
+
+
 // ─── Main test entry point ──────────────────────────────────────────────────
 int main() {
     fprintf(stdout, "\n========================================\n");
@@ -299,6 +369,7 @@ int main() {
     RUN_TEST(test_edge_nan_accel_rejected);
     RUN_TEST(test_level_accelerometer_flat_and_tilted);
     RUN_TEST(test_pooled_yaw_optimizer);
+    RUN_TEST(test_pooled_yaw_optimizer_quadrant_disambiguation);
 
     fprintf(stdout, "========================================\n");
     fprintf(stdout, "Results: %d / %d tests passed (%d failed)\n", tests_passed, tests_run, tests_failed);
