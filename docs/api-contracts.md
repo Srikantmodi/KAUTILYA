@@ -1,7 +1,8 @@
 # API Contracts — SIH PS 26168 (Intelligent Dead Reckoning)
 
 Derived from the Master PRD, Section 6 (file-by-file implementation guide) and
-Section 2.1 (canonical data flow). This document is **binding**:  everyone else's
+Section 2.1 (canonical data flow). This document is **binding**: if your own
+judgment conflicts with what's written here, this file wins — everyone else's
 code is being written against these exact shapes. If you think something here
 is wrong, raise it with the team and get this file updated; don't quietly
 deviate in your own module.
@@ -268,25 +269,55 @@ scoring logic duplicated in Kotlin (§7 guardrail #1).
 
 ## 8. `inference/TFLiteInferenceEngine.kt` + `OnnxInferenceEngine.kt` (§6.6) — Member 6
 
+**LOCKED as of placeholder model v1.0 — confirmed by ML team, shape/plumbing
+final, only accuracy pending. No `⚠️ ASSUMPTION` markers remain in this
+section.**
+
+**Input — sliding window:**
+- Window length: exactly **20 samples** = 2 seconds of history at 10Hz.
+  Maintain a FIFO buffer in `SensorDataBuffer`: push 1 new sample, pop 1 old
+  sample every 100ms.
+- 6 features per timestep, in this **exact order**:
+  `[leveled_ax, leveled_ay, leveled_az, gyro_yaw, gyro_pitch, gyro_roll]`
+  — `leveled_a*` is `calibration.cpp`'s `level_accelerometer()` output
+  (Section 3), never raw accel.
+- Normalization: `x_norm = (x_raw - mean_i) / std_i` per feature, applied in
+  Kotlin using the constants in `normalization_stats_v2.npz`, **before** the
+  window is fed to the model. Not baked into the model graph.
+
+**Hidden state (GRU) — model is structurally stateless, state managed externally:**
+- `h_in` tensor: shape `[1, 1, 64]`, Float32
+- `h_out` tensor: shape `[1, 1, 64]`, Float32
+- First inference call of a drive/session: `h_in` = all zeros
+- Every subsequent call: `h_in` = the `h_out` returned by the *previous* call
+- Reset to all-zeros **only** at new-session start — never mid-session, never
+  every call. This is the exact silent-degradation trap called out in the
+  PRD (§7 guardrail #6) — write an explicit test proving persistence across
+  calls and reset only at session boundaries.
+
+**Outputs:**
+- Output 1 `speed_metric`: shape `[1,1]`, Float32. Placeholder model outputs
+  relative Δv; the final model will output absolute speed (m/s) through the
+  same tensor. Only the downstream *meaning* in fusion's `predict()` call
+  changes later, not the plumbing.
+- Output 2 `stationary_logit`: shape `[1,1]`, Float32, a **raw logit** —
+  apply sigmoid (`1 / (1 + exp(-x))`) in Kotlin before comparing against the
+  ZUPT threshold (`stationary_probability > 0.95`, Section 4).
+
 ```kotlin
 class TFLiteInferenceEngine {
-    fun initialize(context: Context)  // loads velocity_model.tflite once
+    fun initialize(context: Context)  // loads converted .tflite once
     fun infer(window: List<ImuSample>): InferenceResult
-    // GRU hidden state is a persistent private member, fed forward across calls,
-    // reset ONLY on session start or explicit recalibration event
+    // h_in/h_out cached as a persistent private FloatArray member,
+    // fed forward across calls, reset ONLY at session start
 }
 
 data class InferenceResult(
-    val deltaV: Float,               // m/s, change in forward speed over last ~100ms
-    val stationaryProbability: Float // [0,1]
+    val deltaV: Float,               // raw speed_metric output (see note above
+                                       // on placeholder-vs-final meaning)
+    val stationaryProbability: Float // [0,1], AFTER sigmoid applied
 )
 ```
-
-⚠️ ASSUMPTION — window length isn't given an exact sample count in the PRD
-excerpt reviewed here, only "1–2 second trailing window." Confirm exact
-window size (in samples, given your sensor sampling rate) with whoever owns
-the ML training pipeline before finalizing `getWindow()`'s parameters in
-`SensorDataBuffer`.
 
 **Handoff downstream:** `InferenceResult` feeds Member 4's `predict(delta_v, dt)`
 and the ZUPT check in `apply_zupt()`.
@@ -405,7 +436,9 @@ def run_benchmark(drive_log_path: str, inject_blackout: bool = True) -> Benchmar
 1. Exact `NavState.covariance` dimensionality (Section 1) — depends on final UKF state vector size.
 2. Static calibration gate threshold value (Section 3).
 3. Mode-manager quality-scoring thresholds (Section 7).
-4. Inference window size in samples (Section 8).
+4. ~~Inference window size in samples (Section 8).~~ **RESOLVED** — locked
+   per ML team's placeholder model v1.0 confirmation (20 samples, 6 features,
+   exact order and hidden-state shapes now specified in Section 8).
 5. Map-graph serialization format (Section 13).
 6. `update_map_match` confidence threshold default (Section 4).
 

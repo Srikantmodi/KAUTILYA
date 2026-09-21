@@ -1,0 +1,2 @@
+session_id,start_time_ms,end_time_ms,duration_ms,duration_bucket,speed_regime,avg_speed_mps,true_distance_m,final_error_m,drift_pct,pass_10pct
+sample_drive_log,1700000004580,1700000011450,6870,short_<30s,low_1-10mps,8.4,363.94,0.0,0.0,True
