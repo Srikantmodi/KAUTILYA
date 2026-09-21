@@ -10,6 +10,9 @@ find_package(JNI QUIET)
 # Core engine shared library (compiled into libcore_engine.so for Android app)
 add_library(core_engine SHARED
     src/calibration.cpp
+    src/ins_mechanization.cpp
+    src/ukf_fusion.cpp
+    src/mode_manager.cpp
 )
 
 target_include_directories(core_engine PUBLIC
@@ -26,7 +29,7 @@ if(DEFINED ANDROID_NDK)
     )
 endif()
 
-# Unit test executable for Member 3 (and other members)
+# Unit test executable for Member 3 — Calibration
 add_executable(test_calibration
     tests/test_calibration.cpp
     src/calibration.cpp
@@ -40,5 +43,29 @@ if(JNI_FOUND)
     target_include_directories(test_calibration PRIVATE ${JNI_INCLUDE_DIRS})
 endif()
 
+# Unit test executable for Member 4 — INS Mechanization
+add_executable(test_ins_mechanization
+    tests/test_ins_mechanization.cpp
+    src/ins_mechanization.cpp
+)
+
+target_include_directories(test_ins_mechanization PRIVATE
+    include/
+)
+
+# Unit test executable for Member 4 — UKF Fusion + Mode Manager
+add_executable(test_ukf_fusion
+    tests/test_ukf_fusion.cpp
+    src/ukf_fusion.cpp
+    src/ins_mechanization.cpp
+    src/mode_manager.cpp
+)
+
+target_include_directories(test_ukf_fusion PRIVATE
+    include/
+)
+
 enable_testing()
 add_test(NAME test_calibration COMMAND test_calibration)
+add_test(NAME test_ins_mechanization COMMAND test_ins_mechanization)
+add_test(NAME test_ukf_fusion COMMAND test_ukf_fusion)
