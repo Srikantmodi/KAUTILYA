@@ -24,9 +24,9 @@ flowchart LR
     H -->|Yes| C
     H -->|No| D
 
-    classDef live fill:#EAF3DE,stroke:#639922,color:#173404
-    classDef lost fill:#FCEBEB,stroke:#E24B4A,color:#501313
-    classDef dr fill:#FAEEDA,stroke:#BA7517,color:#412402
+    classDef live fill:#EAF3DE,stroke:#639922
+    classDef lost fill:#FCEBEB,stroke:#E24B4A
+    classDef dr fill:#FAEEDA,stroke:#BA7517
     class A,C live
     class B,H lost
     class D,E,F,G dr
@@ -37,17 +37,17 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph Mobile["android-app"]
-        UI["Live map UI: GNSS/DR trail, telemetry panel"]
+        UI["Live map UI — GNSS/DR trail, telemetry"]
         SENSORS["IMU capture: accelerometer + gyroscope"]
     end
 
     subgraph Edge["edge-engine"]
-        CAL["Static + continuous EKF calibration<br/>mid-drive mount-shift detection"]
+        CAL["EKF calibration — mount-shift detection"]
         ORI["Adaptive-covariance orientation filter"]
     end
 
     subgraph ML["ml-pipeline"]
-        GRU["GRU motion filter<br/>dv regression, dual-head, ZUPT clamp"]
+        GRU["GRU motion filter — dv regression, ZUPT clamp"]
     end
 
     subgraph Core["core-engine"]
@@ -64,10 +64,10 @@ flowchart TB
     FUSE --> UI
     FUSE --> BENCH
 
-    classDef mobile fill:#E6F1FB,stroke:#378ADD,color:#042C53
-    classDef edge fill:#FAEEDA,stroke:#BA7517,color:#412402
-    classDef ml fill:#EEEDFE,stroke:#7F77DD,color:#26215C
-    classDef core fill:#EAF3DE,stroke:#639922,color:#173404
+    classDef mobile fill:#E6F1FB,stroke:#378ADD
+    classDef edge fill:#FAEEDA,stroke:#BA7517
+    classDef ml fill:#EEEDFE,stroke:#7F77DD
+    classDef core fill:#EAF3DE,stroke:#639922
     class UI,SENSORS mobile
     class CAL,ORI edge
     class GRU ml
