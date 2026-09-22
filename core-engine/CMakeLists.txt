@@ -13,6 +13,7 @@ add_library(core_engine SHARED
     src/ins_mechanization.cpp
     src/ukf_fusion.cpp
     src/mode_manager.cpp
+    src/map_matching.cpp
 )
 
 target_include_directories(core_engine PUBLIC
